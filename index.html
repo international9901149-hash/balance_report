@@ -9,7 +9,7 @@
   :root {
     --ink: #1a2332; --ink-soft: #5a6577; --line: #e3e7ee; --bg: #fbfcfd; --card: #ffffff;
     --asset: #1f7a5c; --debt: #b0413e; --net: #1a3a6b; --ratio: #8a6d1f; --accent: #1a3a6b;
-    --up: #1f7a5c; --down: #b0413e;
+    --up: #1f7a5c; --down: #b0413e; --cash: #6a4fb3; --income: #1f7a5c; --expense: #b0413e; --balance: #8a6d1f;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -53,7 +53,7 @@
     padding: 9px 12px; text-align: right; border-bottom: 2px solid var(--line); z-index: 2;
   }
   thead th.date-col { text-align: left; position: sticky; left: 0; z-index: 3; background: #eef2f7; }
-  thead th.grp-asset { color: var(--asset); } thead th.grp-debt { color: var(--debt); }
+  thead th.grp-asset { color: var(--asset); } thead th.grp-debt { color: var(--debt); } thead th.grp-cash { color: var(--cash); }
   tbody td { padding: 8px 12px; text-align: right; border-bottom: 1px solid #f1f3f7; font-variant-numeric: tabular-nums; }
   tbody td.date-col { text-align: left; font-weight: 600; position: sticky; left: 0; background: #fff; z-index: 1; }
   tbody tr:hover td { background: #f8fafc; }
@@ -87,7 +87,7 @@
       <div class="chart-box"><canvas id="trendChart"></canvas></div>
       <div class="chart-box"><canvas id="ratioChart"></canvas></div>
     </div>
-    <div class="legend-note">左：活期存款（加總）／美股／台股／不動產資產走勢。右：負債比率（%）與每月淨資產變化。</div>
+    <div class="legend-note">左：非不動產資產（活期存款＋美股＋台股）／不動產資產走勢。右：本月收入（綠柱）／本月支出（紅柱）／結餘（金線）。</div>
   </div>
 
   <div class="panel">
@@ -97,7 +97,7 @@
       <button id="csvBtn">下載 CSV</button>
     </div>
     <div class="table-scroll" id="tableWrap"><div class="empty">載入中…</div></div>
-    <div class="legend-note">每列為一筆紀錄日期。每個資產／負債項目自成一欄；金額為 0 以淡色顯示。「淨資產變化」為與前一筆紀錄相比的增減。</div>
+    <div class="legend-note">每列為一筆紀錄日期。每個資產／負債／現金流項目自成一欄；金額為 0 以淡色顯示。「淨資產變化」為與前一筆紀錄相比的增減；「結餘」為該筆紀錄的本月收入減本月支出。</div>
   </div>
 </div>
 
@@ -121,9 +121,9 @@ function isProp(g){ return g.type === "property"; }
 function propVal(it){ return (parseFloat(it.ping)||0)*(parseFloat(it.unit)||0)*10000+(parseFloat(it.parking)||0)*10000; }
 function itemVal(it,g){ return isProp(g) ? propVal(it) : (parseFloat(it.amt)||0); }
 
-// 從一筆 record.data 攤平成 { 欄位名: 金額 }，並回傳資產/負債欄位清單
+// 從一筆 record.data 攤平成 { 欄位名: 金額 }，並回傳資產/負債/現金流欄位清單
 function flatten(data){
-  const out = { assetCols: [], debtCols: [], values: {} };
+  const out = { assetCols: [], debtCols: [], cashCols: [], values: {} };
   ["asset","debt"].forEach(side => {
     (data[side]||[]).forEach(g => {
       g.items.forEach(it => {
@@ -133,11 +133,18 @@ function flatten(data){
       });
     });
   });
+  (data.cashflow||[]).forEach(g => {
+    g.items.forEach(it => {
+      const col = `${g.name}｜${it.name}`;
+      out.values[col] = (out.values[col]||0) + (parseFloat(it.amt)||0);
+      out.cashCols.push(col);
+    });
+  });
   return out;
 }
 
-let rows = []; // 每筆：{ date, netWorth, totalAsset, totalDebt, ratio, values:{} }
-let assetCols = [], debtCols = [];
+let rows = []; // 每筆：{ date, netWorth, totalAsset, totalDebt, ratio, monthlyIncome, monthlyExpense, cashBalance, values:{} }
+let assetCols = [], debtCols = [], cashCols = [];
 
 async function init(){
   if(!firebaseConfig.apiKey){ setStatus("err","尚未設定 firebaseConfig"); return; }
@@ -170,23 +177,28 @@ async function fetchAll(fs, db){
     if(!raw.length){ $("#tableWrap").innerHTML = '<div class="empty">尚無雲端紀錄，請先回主頁儲存幾筆資料。</div>'; setStatus("on","已連線（無資料）"); return; }
 
     // 收集所有出現過的欄位（保持首次出現順序）
-    const aSet = [], dSet = [];
+    const aSet = [], dSet = [], cSet = [];
     raw.forEach(r => {
       const f = flatten(r.data||{});
       f.assetCols.forEach(c => { if(!aSet.includes(c)) aSet.push(c); });
       f.debtCols.forEach(c => { if(!dSet.includes(c)) dSet.push(c); });
+      f.cashCols.forEach(c => { if(!cSet.includes(c)) cSet.push(c); });
     });
-    assetCols = aSet; debtCols = dSet;
+    assetCols = aSet; debtCols = dSet; cashCols = cSet;
 
     rows = raw.map(r => {
       const f = flatten(r.data||{});
       const a = r.totalAsset != null ? r.totalAsset : assetCols.reduce((s,c)=>s+(f.values[c]||0),0);
       const d = r.totalDebt  != null ? r.totalDebt  : debtCols.reduce((s,c)=>s+(f.values[c]||0),0);
+      const expense = r.monthlyExpense != null ? r.monthlyExpense : cashCols.reduce((s,c)=>s+(f.values[c]||0),0);
+      const income = r.monthlyIncome != null ? r.monthlyIncome : (parseFloat((r.data||{}).income)||0);
       return {
         date: r.recordDate || (r.savedAt? r.savedAt.slice(0,10) : ""),
         netWorth: r.netWorth != null ? r.netWorth : a-d,
         totalAsset: a, totalDebt: d,
         ratio: r.ratio != null ? r.ratio : (a>0? d/a : 0),
+        monthlyIncome: income, monthlyExpense: expense,
+        cashBalance: r.cashBalance != null ? r.cashBalance : income - expense,
         values: f.values
       };
     }).sort((x,y) => (x.date||"").localeCompare(y.date||"")); // 由舊到新
@@ -219,6 +231,8 @@ function renderTable(){
   h += '<th class="group-sep">總資產</th>';
   debtCols.forEach(c => h += `<th class="grp-debt group-sep">${esc(c)}</th>`);
   h += '<th class="group-sep">總負債</th><th>淨資產</th><th>負債比</th><th>淨資產變化</th>';
+  cashCols.forEach((c,i) => h += `<th class="grp-cash ${i===0?'group-sep':''}">${esc(c)}</th>`);
+  h += '<th class="group-sep">本月收入</th><th>本月支出</th><th>結餘</th>';
   h += "</tr></thead><tbody>";
 
   rows.forEach((r,idx) => {
@@ -233,6 +247,10 @@ function renderTable(){
     h += `<td class="net">${num(r.netWorth)}</td>`;
     h += `<td>${(r.ratio*100).toFixed(1)}%</td>`;
     h += chg==null ? '<td>—</td>' : `<td class="chg ${chg>=0?'up':'down'}">${chg>=0?'+':'−'}${num(Math.abs(chg))}</td>`;
+    cashCols.forEach((c,i) => { const v=r.values[c]||0; h += `<td class="${v===0?'zero':''} ${i===0?'group-sep':''}">${num(v)}</td>`; });
+    h += `<td class="asset-tot group-sep">${num(r.monthlyIncome)}</td>`;
+    h += `<td class="debt-tot">${num(r.monthlyExpense)}</td>`;
+    h += `<td class="chg ${r.cashBalance>=0?'up':'down'}">${num(r.cashBalance)}</td>`;
     h += "</tr>";
   });
   h += "</tbody></table>";
@@ -256,21 +274,23 @@ function seriesValue(r, matchCat, matchItem){
 function renderCharts(){
   const labels = rows.map(r => fmtDate(r.date));
 
-  // 四條趨勢線：活期存款(整個類別加總)、美股、台股、不動產資產(整個類別加總)
-  const seriesDefs = [
-    { label: "活期存款", cat: "活期存款", item: null, color: "#1a3a6b", fill: true },
-    { label: "美股",     cat: "投資資產", item: "美股", color: "#1f7a5c", fill: false },
-    { label: "台股",     cat: "投資資產", item: "台股", color: "#c2752a", fill: false },
-    { label: "不動產資產", cat: "不動產資產", item: null, color: "#7a4ea3", fill: false },
+  // 左圖：非不動產資產（活期存款＋美股＋台股 加總）／不動產資產
+  const nonRealEstate = rows.map(r => {
+    let sum = 0;
+    Object.keys(r.values).forEach(col => {
+      const [cat] = col.split("｜");
+      if (cat === "活期存款" || cat === "投資資產") sum += r.values[col] || 0;
+    });
+    return Math.round(sum);
+  });
+  const realEstate = rows.map(r => Math.round(seriesValue(r, "不動產資產", null)));
+
+  const datasets = [
+    { label: "非不動產資產", data: nonRealEstate, borderColor: "#1a3a6b",
+      backgroundColor: "rgba(26,58,107,.08)", fill: true, tension: .25, borderWidth: 2.5, pointRadius: 3 },
+    { label: "不動產資產", data: realEstate, borderColor: "#7a4ea3",
+      backgroundColor: "#7a4ea3", fill: false, tension: .25, borderWidth: 2, pointRadius: 3 },
   ];
-  const datasets = seriesDefs.map(s => ({
-    label: s.label,
-    data: rows.map(r => Math.round(seriesValue(r, s.cat, s.item))),
-    borderColor: s.color,
-    backgroundColor: s.fill ? "rgba(26,58,107,.08)" : s.color,
-    fill: s.fill, tension: .25, borderWidth: s.fill ? 2.5 : 2,
-    pointRadius: 3,
-  }));
 
   const baseOpts = {
     responsive: true, maintainAspectRatio: false,
@@ -284,23 +304,27 @@ function renderCharts(){
   if(trendC) trendC.destroy();
   trendC = new Chart($("#trendChart"), { type: "line", data: { labels, datasets }, options: baseOpts });
 
-  const ratio = rows.map(r => +(r.ratio*100).toFixed(1));
-  const chg = rows.map((r,i) => i>0 ? Math.round(r.netWorth - rows[i-1].netWorth) : 0);
+  // 右圖：現金流收入(綠柱)／支出(紅柱，畫在零軸下方)／結餘(金線)
+  const income = rows.map(r => Math.round(r.monthlyIncome||0));
+  const expenseNeg = rows.map(r => -Math.round(r.monthlyExpense||0));
+  const balance = rows.map(r => Math.round(r.cashBalance||0));
   if(ratioC) ratioC.destroy();
   ratioC = new Chart($("#ratioChart"), {
     type: "bar",
     data: { labels, datasets: [
-      { type:"bar", label: "淨資產變化", data: chg, yAxisID:"y",
-        backgroundColor: chg.map(v => v>=0 ? "rgba(31,122,92,.55)" : "rgba(176,65,62,.55)") },
-      { type:"line", label: "負債比率(%)", data: ratio, yAxisID:"y1",
-        borderColor: "#8a6d1f", backgroundColor:"#8a6d1f", tension:.25, borderWidth: 2 },
+      { type:"bar", label: "本月收入", data: income, backgroundColor: "rgba(31,122,92,.55)", order: 2 },
+      { type:"bar", label: "本月支出", data: expenseNeg, backgroundColor: "rgba(176,65,62,.55)", order: 2 },
+      { type:"line", label: "結餘", data: balance, borderColor: "#8a6d1f", backgroundColor:"#8a6d1f",
+        tension:.25, borderWidth: 2, pointRadius: 3, order: 1 },
     ]},
     options: {
       responsive:true, maintainAspectRatio:false, interaction:{mode:"index",intersect:false},
-      plugins:{ legend:{ labels:{ boxWidth:12 } } },
+      plugins:{
+        legend:{ labels:{ boxWidth:12 } },
+        tooltip:{ callbacks:{ label: c => `${c.dataset.label}：NT$ ${Math.abs(c.parsed.y).toLocaleString("en-US")}` } }
+      },
       scales:{
-        y: { position:"left", ticks:{ callback:v=>(v/10000).toLocaleString()+"萬" }, title:{display:true,text:"淨資產變化"} },
-        y1:{ position:"right", grid:{drawOnChartArea:false}, ticks:{ callback:v=>v+"%" }, title:{display:true,text:"負債比%"} }
+        y: { ticks:{ callback:v=>(v/10000).toLocaleString()+"萬" }, title:{display:true,text:"金額"} }
       }
     }
   });
@@ -310,7 +334,7 @@ function esc(s){ return String(s).replace(/</g,"&lt;").replace(/&/g,"&amp;"); }
 
 // 匯出
 function tableTSV(){
-  const head = ["日期", ...assetCols, "總資產", ...debtCols, "總負債", "淨資產", "負債比%", "淨資產變化"];
+  const head = ["日期", ...assetCols, "總資產", ...debtCols, "總負債", "淨資產", "負債比%", "淨資產變化", ...cashCols, "本月收入", "本月支出", "結餘"];
   const lines = [head.join("\t")];
   rows.forEach((r,idx) => {
     const prev = idx>0?rows[idx-1]:null; const chg = prev? r.netWorth-prev.netWorth : "";
@@ -321,7 +345,11 @@ function tableTSV(){
       Math.round(r.totalDebt),
       Math.round(r.netWorth),
       (r.ratio*100).toFixed(1),
-      chg===""?"":Math.round(chg)
+      chg===""?"":Math.round(chg),
+      ...cashCols.map(c => Math.round(r.values[c]||0)),
+      Math.round(r.monthlyIncome||0),
+      Math.round(r.monthlyExpense||0),
+      Math.round(r.cashBalance||0)
     ];
     lines.push(cells.join("\t"));
   });
