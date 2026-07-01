@@ -69,6 +69,12 @@
   .toolbar { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
   .toolbar button { border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 7px 13px; font-size: 0.78rem; cursor: pointer; color: var(--ink); font-weight: 500; }
   .toolbar button:hover { background: #f1f5fb; }
+  .rowbtn { border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 4px 10px;
+    font-size: 0.72rem; cursor: pointer; margin-right: 4px; color: var(--ink); font-weight: 500; }
+  .rowbtn:hover { background: #f1f5fb; }
+  .rowbtn.del { color: var(--debt); }
+  .rowbtn.del:hover { background: rgba(176,65,62,.1); border-color: var(--debt); }
+  td.actions { white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -87,7 +93,7 @@
       <div class="chart-box"><canvas id="trendChart"></canvas></div>
       <div class="chart-box"><canvas id="ratioChart"></canvas></div>
     </div>
-    <div class="legend-note">左：非不動產資產（活期存款＋美股＋台股）／不動產資產走勢。右：本月收入（綠柱）／本月支出（紅柱）／結餘（金線）。</div>
+    <div class="legend-note">左：非不動產資產（活期存款＋美股＋台股加總，實線區域）／不動產資產／活期存款／美股／台股走勢（虛線為個別項目）。右：本月收入（綠柱）／本月支出（紅柱）／結餘（金線）。</div>
   </div>
 
   <div class="panel">
@@ -111,6 +117,10 @@ const firebaseConfig = {
   appId: "1:600994047066:web:e7c041ea86d825d26fa463"
 };
 const OWNER_ID = "jim";
+
+// 「編輯」按鈕會導向此網址並帶上 ?loadId=文件ID。
+// 若「個人資產負債表」主頁與本報表不在同一個資料夾／網域，請把下面改成主頁的完整網址。
+const SHEET_URL = "balance-sheet.html";
 
 const fmt = n => "NT$ " + Math.round(n).toLocaleString("en-US");
 const num = n => Math.round(n).toLocaleString("en-US");
@@ -143,8 +153,9 @@ function flatten(data){
   return out;
 }
 
-let rows = []; // 每筆：{ date, netWorth, totalAsset, totalDebt, ratio, monthlyIncome, monthlyExpense, cashBalance, values:{} }
+let rows = []; // 每筆：{ id, date, netWorth, totalAsset, totalDebt, ratio, monthlyIncome, monthlyExpense, cashBalance, values:{} }
 let assetCols = [], debtCols = [], cashCols = [];
+let FS = null, DB = null;
 
 async function init(){
   if(!firebaseConfig.apiKey){ setStatus("err","尚未設定 firebaseConfig"); return; }
@@ -169,11 +180,12 @@ async function init(){
 function setStatus(s,msg){ $("#dot").className = "dot "+(s==="on"?"on":s==="err"?"err":""); $("#status").textContent = msg; }
 
 async function fetchAll(fs, db){
+  FS = fs; DB = db;
   try{
     const col = fs.collection(db,"balanceSheets");
     const snap = await fs.getDocs(col);
     const raw = [];
-    snap.forEach(d => { const x = d.data(); if((x.owner||"")===OWNER_ID) raw.push(x); });
+    snap.forEach(d => { const x = d.data(); if((x.owner||"")===OWNER_ID) raw.push({ ...x, __id: d.id }); });
     if(!raw.length){ $("#tableWrap").innerHTML = '<div class="empty">尚無雲端紀錄，請先回主頁儲存幾筆資料。</div>'; setStatus("on","已連線（無資料）"); return; }
 
     // 收集所有出現過的欄位（保持首次出現順序）
@@ -193,6 +205,7 @@ async function fetchAll(fs, db){
       const expense = r.monthlyExpense != null ? r.monthlyExpense : cashCols.reduce((s,c)=>s+(f.values[c]||0),0);
       const income = r.monthlyIncome != null ? r.monthlyIncome : (parseFloat((r.data||{}).income)||0);
       return {
+        id: r.__id,
         date: r.recordDate || (r.savedAt? r.savedAt.slice(0,10) : ""),
         netWorth: r.netWorth != null ? r.netWorth : a-d,
         totalAsset: a, totalDebt: d,
@@ -227,6 +240,7 @@ function renderCards(){
 function renderTable(){
   let h = "<table><thead><tr>";
   h += '<th class="date-col">日期</th>';
+  h += '<th class="group-sep">操作</th>';
   assetCols.forEach((c,i) => h += `<th class="grp-asset ${i===0?'group-sep':''}">${esc(c)}</th>`);
   h += '<th class="group-sep">總資產</th>';
   debtCols.forEach(c => h += `<th class="grp-debt group-sep">${esc(c)}</th>`);
@@ -240,6 +254,7 @@ function renderTable(){
     const chg = prev ? r.netWorth - prev.netWorth : null;
     h += "<tr>";
     h += `<td class="date-col">${fmtDate(r.date)}</td>`;
+    h += `<td class="actions group-sep"><button class="rowbtn edit" data-id="${r.id}">編輯</button><button class="rowbtn del" data-id="${r.id}">刪除</button></td>`;
     assetCols.forEach((c,i) => { const v=r.values[c]||0; h += `<td class="${v===0?'zero':''} ${i===0?'group-sep':''}">${num(v)}</td>`; });
     h += `<td class="asset-tot group-sep">${num(r.totalAsset)}</td>`;
     debtCols.forEach(c => { const v=r.values[c]||0; h += `<td class="${v===0?'zero':''} group-sep">${num(v)}</td>`; });
@@ -255,6 +270,26 @@ function renderTable(){
   });
   h += "</tbody></table>";
   $("#tableWrap").innerHTML = h;
+
+  $("#tableWrap").onclick = async (e) => {
+    const editBtn = e.target.closest(".rowbtn.edit");
+    const delBtn = e.target.closest(".rowbtn.del");
+    if (editBtn) {
+      location.href = SHEET_URL + "?loadId=" + encodeURIComponent(editBtn.dataset.id);
+      return;
+    }
+    if (delBtn) {
+      const id = delBtn.dataset.id;
+      const row = rows.find(r => r.id === id);
+      if (!confirm(`確定刪除「${fmtDate(row ? row.date : "")}」這筆雲端紀錄？此動作無法復原。`)) return;
+      try {
+        await FS.deleteDoc(FS.doc(DB, "balanceSheets", id));
+        await fetchAll(FS, DB);
+      } catch (err) {
+        alert("刪除失敗：" + (err.code || err.message));
+      }
+    }
+  };
 }
 
 let trendC, ratioC;
@@ -284,12 +319,21 @@ function renderCharts(){
     return Math.round(sum);
   });
   const realEstate = rows.map(r => Math.round(seriesValue(r, "不動產資產", null)));
+  const cash = rows.map(r => Math.round(seriesValue(r, "活期存款", null)));
+  const usStock = rows.map(r => Math.round(seriesValue(r, "投資資產", "美股")));
+  const twStock = rows.map(r => Math.round(seriesValue(r, "投資資產", "台股")));
 
   const datasets = [
     { label: "非不動產資產", data: nonRealEstate, borderColor: "#1a3a6b",
       backgroundColor: "rgba(26,58,107,.08)", fill: true, tension: .25, borderWidth: 2.5, pointRadius: 3 },
     { label: "不動產資產", data: realEstate, borderColor: "#7a4ea3",
       backgroundColor: "#7a4ea3", fill: false, tension: .25, borderWidth: 2, pointRadius: 3 },
+    { label: "活期存款", data: cash, borderColor: "#1f7a5c",
+      backgroundColor: "#1f7a5c", fill: false, tension: .25, borderWidth: 1.5, pointRadius: 2, borderDash: [4,3] },
+    { label: "美股", data: usStock, borderColor: "#c2752a",
+      backgroundColor: "#c2752a", fill: false, tension: .25, borderWidth: 1.5, pointRadius: 2, borderDash: [4,3] },
+    { label: "台股", data: twStock, borderColor: "#b0413e",
+      backgroundColor: "#b0413e", fill: false, tension: .25, borderWidth: 1.5, pointRadius: 2, borderDash: [4,3] },
   ];
 
   const baseOpts = {
