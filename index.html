@@ -352,6 +352,28 @@ function renderCharts(){
   const income = rows.map(r => Math.round(r.monthlyIncome||0));
   const expenseNeg = rows.map(r => -Math.round(r.monthlyExpense||0));
   const balance = rows.map(r => Math.round(r.cashBalance||0));
+
+  // 從有紀錄以來的結餘總和（累計結餘）
+  const totalBalance = rows.reduce((s,r) => s + (r.cashBalance||0), 0);
+  const totalBalanceLabel = (totalBalance>=0?"+":"−") + "NT " + Math.round(Math.abs(totalBalance)).toLocaleString("en-US");
+
+  // 自訂 plugin：在「本月支出」圖例右方空白處，畫出累計結餘總和文字（金色字體）
+  // 與圖例同一列垂直置中對齊
+  const cumulativeBalancePlugin = {
+    id: "cumulativeBalanceLabel",
+    afterDraw(chart){
+      const { ctx, chartArea, legend } = chart;
+      const midY = legend ? (legend.top + legend.bottom) / 2 : chartArea.top - 20;
+      ctx.save();
+      ctx.font = "700 13px -apple-system, 'PingFang TC', 'Microsoft JhengHei', 'Noto Sans TC', sans-serif";
+      ctx.fillStyle = "#8a6d1f";
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      ctx.fillText("累計結餘："+totalBalanceLabel, chartArea.right, midY);
+      ctx.restore();
+    }
+  };
+
   if(ratioC) ratioC.destroy();
   ratioC = new Chart($("#ratioChart"), {
     type: "bar",
@@ -370,7 +392,8 @@ function renderCharts(){
       scales:{
         y: { ticks:{ callback:v=>(v/10000).toLocaleString()+"萬" }, title:{display:true,text:"金額"} }
       }
-    }
+    },
+    plugins: [cumulativeBalancePlugin]
   });
 }
 
