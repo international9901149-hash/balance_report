@@ -12,6 +12,22 @@
     --up: #1f7a5c; --down: #b0413e; --cash: #6a4fb3; --income: #1f7a5c; --expense: #b0413e; --balance: #8a6d1f;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  #authGate{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;
+    justify-content:center;flex-direction:column;gap:16px;z-index:999;padding:24px;text-align:center}
+  #authGate.hidden{display:none}
+  #authGate h2{font-size:20px;color:var(--ink)}
+  #authGate p{color:var(--ink-soft);font-size:14px;max-width:320px}
+  #googleLoginBtn{display:flex;align-items:center;gap:10px;padding:10px 20px;
+    background:#fff;border:1px solid var(--line);border-radius:10px;font-size:15px;
+    cursor:pointer;color:var(--ink)}
+  #googleLoginBtn:hover{background:#f5f6f8}
+  #authError{color:var(--debt);font-size:13px;min-height:1.2em}
+  .wrap.hidden{display:none}
+  .userbar{display:flex;align-items:center;justify-content:flex-end;gap:10px;
+    font-size:13px;color:var(--ink-soft);margin-bottom:8px}
+  .userbar button{border:1px solid var(--line);background:#fff;border-radius:8px;
+    padding:4px 10px;font-size:12px;cursor:pointer;color:var(--ink-soft)}
+  .userbar button:hover{background:#f5f6f8}
   body {
     font-family: -apple-system, "PingFang TC", "Microsoft JhengHei", "Noto Sans TC", sans-serif;
     background: var(--bg); color: var(--ink); line-height: 1.5; padding: 24px 16px 60px;
@@ -78,7 +94,19 @@
 </style>
 </head>
 <body>
-<div class="wrap">
+
+<div id="authGate">
+  <h2>資產負債統計報表</h2>
+  <p>此網站僅限擁有者本人使用，請使用您的 Google 帳號登入以繼續。</p>
+  <button id="googleLoginBtn">使用 Google 帳號登入</button>
+  <div id="authError"></div>
+</div>
+
+<div class="wrap hidden" id="mainWrap">
+  <div class="userbar" id="userBar" style="display:none">
+    <span id="userEmail"></span>
+    <button id="logoutBtn">登出</button>
+  </div>
   <header>
     <h1>資產負債統計報表 <small>Monthly Report</small></h1>
     <button class="back" onclick="window.close()">✕ 關閉</button>
@@ -116,7 +144,7 @@ const firebaseConfig = {
   messagingSenderId: "600994047066",
   appId: "1:600994047066:web:e7c041ea86d825d26fa463"
 };
-const OWNER_ID = "jim";
+let OWNER_ID = null; // 保留變數以維持相容，安全性已由 Firestore 規則的 email 驗證把關
 
 // 「編輯」按鈕會導向此網址並帶上 ?loadId=文件ID。
 // 若「個人資產負債表」主頁與本報表不在同一個資料夾／網域，請把下面改成主頁的完整網址。
@@ -157,6 +185,9 @@ let rows = []; // 每筆：{ id, date, netWorth, totalAsset, totalDebt, ratio, m
 let assetCols = [], debtCols = [], cashCols = [];
 let FS = null, DB = null;
 
+const authGate = $("#authGate"), mainWrap = $("#mainWrap"), authErr = $("#authError");
+const userBar = $("#userBar"), userEmail = $("#userEmail");
+
 async function init(){
   if(!firebaseConfig.apiKey){ setStatus("err","尚未設定 firebaseConfig"); return; }
   try{
@@ -168,12 +199,34 @@ async function init(){
     const app = appMod.initializeApp(firebaseConfig);
     const db = fsMod.getFirestore(app);
     const auth = authMod.getAuth(app);
-    await authMod.signInAnonymously(auth);
+
     authMod.onAuthStateChanged(auth, async u => {
-      if(!u) return;
-      setStatus("on","已連線，讀取資料中…");
-      await fetchAll(fsMod, db);
+      if (u) {
+        OWNER_ID = u.uid;
+        authGate.classList.add("hidden");
+        mainWrap.classList.remove("hidden");
+        userBar.style.display = "flex";
+        userEmail.textContent = u.email || u.uid;
+        setStatus("on","已連線，讀取資料中…");
+        await fetchAll(fsMod, db);
+      } else {
+        authGate.classList.remove("hidden");
+        mainWrap.classList.add("hidden");
+        userBar.style.display = "none";
+      }
     });
+
+    $("#googleLoginBtn").onclick = async () => {
+      authErr.textContent = "";
+      try {
+        await authMod.signInWithPopup(auth, new authMod.GoogleAuthProvider());
+      } catch (e) {
+        authErr.textContent = "登入失敗：" + (e.code || e.message);
+      }
+    };
+
+    $("#logoutBtn").onclick = () => authMod.signOut(auth);
+
   }catch(e){ setStatus("err","連線失敗："+e.message); }
 }
 
@@ -185,7 +238,7 @@ async function fetchAll(fs, db){
     const col = fs.collection(db,"balanceSheets");
     const snap = await fs.getDocs(col);
     const raw = [];
-    snap.forEach(d => { const x = d.data(); if((x.owner||"")===OWNER_ID) raw.push({ ...x, __id: d.id }); });
+    snap.forEach(d => { const x = d.data(); raw.push({ ...x, __id: d.id }); });
     if(!raw.length){ $("#tableWrap").innerHTML = '<div class="empty">尚無雲端紀錄，請先回主頁儲存幾筆資料。</div>'; setStatus("on","已連線（無資料）"); return; }
 
     // 收集所有出現過的欄位（保持首次出現順序）
